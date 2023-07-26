@@ -7,8 +7,6 @@ from torch.utils.data import DataLoader
 from torchvision import datasets
 from torchvision.transforms import ToTensor
 
-IMAGE_SIZE = 28 * 28
-LAYER_SIZE = 512
 FEATURE_LABELS = {
     0: "T-Shirt",
     1: "Trouser",
@@ -40,17 +38,20 @@ MODEL_PATH = "./classify_fashion_images_latest_model.pt"
 class NeuralNetwork(nn.Module):
     def __init__(self):
         super().__init__()
-        self._flatten = nn.Flatten()
+        # self._flatten = nn.Flatten()
         self.convolutional_relu_stack = nn.Sequential(
+
             # Create 32 output channels from 1 gray channel
             nn.Conv2d(1, 32, 3),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
+
             nn.Conv2d(32, 64, 3),
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
+
             # Flatten all dimensions except batch (start_dim = 1 by default)
             nn.Flatten(),
             nn.Linear(1600, 128),
