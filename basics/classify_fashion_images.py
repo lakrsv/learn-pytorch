@@ -41,17 +41,20 @@ class NeuralNetwork(nn.Module):
         # self._flatten = nn.Flatten()
         self.convolutional_relu_stack = nn.Sequential(
 
+            # 1st Convolutional Layer
             # Create 32 output channels from 1 gray channel
             nn.Conv2d(1, 32, 3),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
 
+            # 2nd Convolutional Layer
             nn.Conv2d(32, 64, 3),
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
 
+            # Linear Layer
             # Flatten all dimensions except batch (start_dim = 1 by default)
             nn.Flatten(),
             nn.Linear(1600, 128),
