@@ -6,6 +6,8 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets
 from torchvision.transforms import transforms, TrivialAugmentWide
+import pytorch_lightning as pl
+from pytorch_lightning.tuner import Tuner
 
 FEATURE_LABELS = {
     0: "T-Shirt",
@@ -19,14 +21,6 @@ FEATURE_LABELS = {
     8: "Bag",
     9: "Ankle Boot",
 }
-
-# training_data_transform = transforms.Compose([
-#     transforms.ToTensor()
-# ])
-#
-# eval_data_transform = transforms.Compose([
-#     transforms.ToTensor()
-# ])
 
 TRAINING_DATA = datasets.FashionMNIST(
     root="data",
@@ -43,7 +37,12 @@ EVAL_DATA = datasets.FashionMNIST(
     download=True,
     transform=transforms.ToTensor()
 )
-MODEL_PATH = "./classify_fashion_images_latest_v2_model.pt"
+MODEL_PATH = "../../models/classify_fashion_images_latest_v2_lightning_model.pt"
+
+# Enable cuDNN auto-tuner
+torch.backends.cudnn.benchmark = True
+# Configure CUDAfloat32 matmul precision
+torch.set_float32_matmul_precision('medium')
 
 
 class CustomImageDataset(Dataset):
@@ -67,14 +66,11 @@ class CustomImageDataset(Dataset):
         self.images.append((variant_img, img_label))
 
 
-class NeuralNetwork(nn.Module):
-    def __init__(self):
+class NeuralNetwork(pl.LightningModule):
+    def __init__(self, train_dataset, eval_dataset, batch_size, learning_rate):
         super().__init__()
-        # self._flatten = nn.Flatten()
-        self.convolutional_relu_stack = nn.Sequential(
-
+        self.model = nn.Sequential(
             # 1st Convolutional Layer
-            # Create 32 output channels from 1 gray channel
             nn.Conv2d(1, 32, 3),
             nn.BatchNorm2d(32),
             nn.ReLU(),
@@ -89,101 +85,56 @@ class NeuralNetwork(nn.Module):
             nn.Dropout(0.4),
 
             # Linear Layer
-            # Flatten all dimensions except batch (start_dim = 1 by default)
             nn.Flatten(),
             nn.Linear(1600, 128),
             nn.ReLU(),
-            # Zero some of the inputs to prevent co-adaption of neurons
             nn.Dropout(0.3),
-            # Reshape to get the output features
             nn.Linear(128, 10),
-
-            # Simple example
-            # nn.Linear(IMAGE_SIZE, LAYER_SIZE),
-            # nn.ReLU(),
-            # nn.Linear(LAYER_SIZE, LAYER_SIZE),
-            # nn.ReLU(),
-            # nn.Linear(LAYER_SIZE, len(FEATURE_LABELS))
         )
+        self.loss_module = nn.CrossEntropyLoss()
+
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
 
     def forward(self, x):
-        # x = self._flatten(x)
-        logits = self.convolutional_relu_stack(x)
-        return logits
+        return self.model(x)
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(model.parameters(), lr=self.learning_rate)
+
+    def training_step(self, batch, batch_idx):
+        (images, labels) = batch
+        # Compute prediction and loss
+        predictions = self.model(images)
+        loss = self.loss_module(predictions, labels)
+
+        accuracy = (predictions.argmax(dim=-1) == labels).float().mean()
+
+        self.log("train_accuracy", accuracy, on_epoch=True, prog_bar=True)
+        self.log("train_loss", loss, on_epoch=True, prog_bar=True)
+        return loss
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, batch_size=self.batch_size)
+
+    def val_dataloader(self):
+        return DataLoader(self.eval_dataset, batch_size=self.batch_size)
+
+    def validation_step(self, batch, batch_idx):
+        (images, labels) = batch
+        predictions = self.model(images).argmax(dim=-1)
+        accuracy = (labels == predictions).float().mean()
+
+        self.log("validation_accuracy", accuracy, on_epoch=True, prog_bar=True)
 
 
-class Runner():
-    def __init__(self, model, optimizer, loss_fn, device, training_data, test_data, batch_size):
-        self.model = model
-        self.optimizer = optimizer
-        self.loss_fn = loss_fn
-        self.device = device
-        self.training_dataloader = DataLoader(training_data, batch_size)
-        self.eval_dataloader = DataLoader(test_data, batch_size)
-
-    def train(self):
-        self.model.train()
-        for batch, (X, y) in enumerate(self.training_dataloader):
-            # Move X,y to device
-            X = X.to(self.device)
-            y = y.to(self.device)
-            # Compute prediction and loss
-            prediction = self.model(X)
-            loss = self.loss_fn(prediction, y)
-            # Backpropagation
-            loss.backward()
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-
-            if batch % 100 == 0:
-                loss, current = loss.item(), (batch + 1) * len(X)
-                print(f"Loss: {loss:>7f} [{current:>5d}/{len(self.training_dataloader.dataset):>5d}]")
-
-    def evaluate(self):
-        self.model.eval()
-        num_batches = len(self.eval_dataloader)
-        eval_loss, correct = 0, 0
-
-        with torch.no_grad():
-            for X, y in self.eval_dataloader:
-                # Move X,y to device
-                X = X.to(self.device)
-                y = y.to(self.device)
-                prediction = self.model(X)
-                eval_loss += self.loss_fn(prediction, y).item()
-                correct += (prediction.argmax(1) == y).type(torch.float).sum().item()
-
-        eval_loss /= num_batches
-        correct /= len(self.eval_dataloader.dataset)
-        print(f"\nEvaluation Error: \n Accuracy: {(100 * correct):>0.1f}%, Avg loss: {eval_loss:>8f}\n")
-
-    def predict(self, img):
-        self.model.eval()
-        with torch.no_grad():
-            X = img.to(self.device)
-            # Create batch of one
-            X = torch.reshape(X, (1, 1, 28, 28))
-            prediction = self.model(X)
-            return prediction
-
-device = ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-model = NeuralNetwork().to(device)
-
+state_dict = None
 has_model_weights = path.isfile(MODEL_PATH)
 if has_model_weights:
     print("Loading latest model from disk")
-    model.load_state_dict(torch.load(MODEL_PATH))
-
-loss_fn = nn.CrossEntropyLoss().to(device)
-
-# https://towardsdatascience.com/7-tips-to-choose-the-best-optimizer-47bb9c1219e
-# Stochastic Gradient Descent
-# optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
-# Adam (Best among adaptive optimizers for most use cases)
-# Less fine tuning needed
-learning_rate = 1e-2
-weight_decay = 1e-5
-optimizer = torch.optim.Adam(model.parameters())
+    state_dict = torch.load(MODEL_PATH)
 
 training_data = TRAINING_DATA
 eval_data = EVAL_DATA
@@ -212,19 +163,20 @@ if should_train:
                 print(f"Progress [{len(augmented_training_data)}/{target_image_amount}]")
     training_data = augmented_training_data
 
-batch_size = 64
-epochs = int(1000/(1 + AUGMENT_AMOUNT))
+learning_rate = 1e-3
+batch_size = 1024
+epochs = int(1000 / (1 + AUGMENT_AMOUNT))
 
-runner = Runner(model, optimizer, loss_fn, device, training_data, eval_data, batch_size)
+model = NeuralNetwork(training_data, eval_data, batch_size, learning_rate)
+if state_dict is not None:
+    model.load_state_dict(state_dict)
 
-# Enable cuDNN auto-tuner
-torch.backends.cudnn.benchmark = True
+trainer = pl.Trainer(max_epochs=epochs)
+tuner = Tuner(trainer)
+tuner.lr_find(model)
 
 if should_train:
-    for t in range(epochs):
-        print(f"Epoch {t+1} [{t + 1}/{epochs}]\n-------------------------------")
-        runner.train()
-        runner.evaluate()
+    trainer.fit(model=model)
     print("Done training model")
     torch.save(model.state_dict(), MODEL_PATH)
 
@@ -237,7 +189,8 @@ total, correct, average_confidence = cols * rows, 0, 0.0
 for i in range(1, cols * rows + 1):
     sample_idx = torch.randint(len(eval_data), size=(1,)).item()
     img, label = eval_data[sample_idx]
-    logits = runner.predict(img)
+    img = torch.reshape(img, (1, 1, 1, 28, 28))
+    logits = trainer.predict(model, img)[0]
     pred_probab = nn.Softmax(dim=1)(logits)
     label_prediction_confidence = pred_probab.amax(1)
     label_prediction = pred_probab.argmax(1)
